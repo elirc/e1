@@ -1,0 +1,21 @@
+import { NextRequest } from "next/server";
+import { problem, respond } from "@/lib/http";
+import { cancelBooking } from "@/lib/mock-services";
+
+export async function POST(
+  request: NextRequest,
+  context: { params: Promise<{ bookingId: string }> },
+) {
+  const { bookingId } = await context.params;
+  const body = (await request.json().catch(() => ({}))) as { reason?: string };
+
+  try {
+    return respond(request, cancelBooking(bookingId, body.reason ?? "Canceled"));
+  } catch (error) {
+    return problem(
+      request,
+      404,
+      error instanceof Error ? error.message : "Unable to cancel booking.",
+    );
+  }
+}

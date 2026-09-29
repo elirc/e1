@@ -1,0 +1,24 @@
+import { NextRequest } from "next/server";
+import { problem, respond } from "@/lib/http";
+import { rescheduleBooking } from "@/lib/mock-services";
+
+export async function POST(
+  request: NextRequest,
+  context: { params: Promise<{ bookingId: string }> },
+) {
+  const { bookingId } = await context.params;
+  const body = (await request.json().catch(() => ({}))) as { startTime?: string };
+
+  try {
+    return respond(
+      request,
+      rescheduleBooking(bookingId, body.startTime ?? new Date().toISOString()),
+    );
+  } catch (error) {
+    return problem(
+      request,
+      404,
+      error instanceof Error ? error.message : "Unable to reschedule booking.",
+    );
+  }
+}

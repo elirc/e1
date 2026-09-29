@@ -1,0 +1,184 @@
+import type {
+  AvailabilityOverride,
+  AvailabilityTemplate,
+  BlockedTimeRange,
+  Booking,
+  EventType,
+  SlotPreview,
+} from "@/lib/domain";
+import { isBlockingBookingStatus } from "@/lib/booking-state";
+import {
+  addDaysToLocalDate,
+  addMinutes,
+  localDatePartsToIso,
+  parseClockTime,
+  toLocalDateParts,
+  weekdayForLocalDate,
+  zonedDateTimeToUtc,
+} from "@/lib/time";
+
+interface UtcWindow {
+  start: Date;
+  end: Date;
+}
+
+function clipWindow(window: UtcWindow, rangeStart: Date, rangeEnd: Date) {
+  const start = new Date(Math.max(window.start.getTime(), rangeStart.getTime()));
+  const end = new Date(Math.min(window.end.getTime(), rangeEnd.getTime()));
+  return end > start ? { start, end } : null;
+}
+
+function subtractWindow(base: UtcWindow, cut: UtcWindow) {
+  if (cut.end <= base.start || cut.start >= base.end) {
+    return [base];
+  }
+
+  const fragments: UtcWindow[] = [];
+
+  if (cut.start > base.start) {
+    fragments.push({ start: base.start, end: cut.start });
+  }
+
+  if (cut.end < base.end) {
+    fragments.push({ start: cut.end, end: base.end });
+  }
+
+  return fragments;
+}
+
+function subtractWindows(base: UtcWindow[], cuts: UtcWindow[]) {
+  return cuts.reduce<UtcWindow[]>((current, cut) => {
+    return current.flatMap((window) => subtractWindow(window, cut));
+  }, base);
+}
+
+function materializeRangesForDate(
+  date: { year: number; month: number; day: number },
+  ranges: { startTime: string; endTime: string }[],
+  timeZone: string,
+) {
+  return ranges.map((range) => {
+    const start = zonedDateTimeToUtc(date, parseClockTime(range.startTime), timeZone);
+    const end = zonedDateTimeToUtc(date, parseClockTime(range.endTime), timeZone);
+    return { start, end };
+  });
+}
+
+export function generateSlots(params: {
+  eventType: EventType;
+  template: AvailabilityTemplate;
+  overrides: AvailabilityOverride[];
+  blockedTimes: BlockedTimeRange[];
+  bookings: Booking[];
+  rangeStart: Date;
+  rangeEnd: Date;
+}) {
+  const {
+    eventType,
+    template,
+    overrides,
+    blockedTimes,
+    bookings,
+    rangeStart,
+    rangeEnd,
+  } = params;
+
+  const slots: SlotPreview[] = [];
+  const startLocalDate = toLocalDateParts(rangeStart, template.timezone);
+  const endLocalDate = toLocalDateParts(rangeEnd, template.timezone);
+  const dayCount = Math.ceil(
+    (Date.UTC(endLocalDate.year, endLocalDate.month - 1, endLocalDate.day) -
+      Date.UTC(
+        startLocalDate.year,
+        startLocalDate.month - 1,
+        startLocalDate.day,
+      )) /
+      86_400_000,
+  );
+
+  for (let dayOffset = 0; dayOffset <= dayCount; dayOffset += 1) {
+    const localDate = addDaysToLocalDate(startLocalDate, dayOffset);
+    const localDateKey = localDatePartsToIso(localDate);
+    const weekday = weekdayForLocalDate(localDate);
+    const baseRule = template.weeklyRules.find(
+      (rule) => rule.dayOfWeek === weekday,
+    );
+
+    let windows = materializeRangesForDate(
+      localDate,
+      baseRule?.ranges ?? [],
+      template.timezone,
+    );
+
+    const matchedOverrides = overrides.filter(
+      (override) => override.date === localDateKey,
+    );
+
+    for (const override of matchedOverrides) {
+      const overrideWindows = materializeRangesForDate(
+        localDate,
+        override.ranges,
+        template.timezone,
+      );
+
+      windows =
+        override.kind === "available"
+          ? [...windows, ...overrideWindows]
+          : subtractWindows(windows, overrideWindows);
+    }
+
+    const blockers = [
+      ...blockedTimes.map((blocked) => ({
+        start: new Date(blocked.startTime),
+        end: new Date(blocked.endTime),
+      })),
+      ...bookings
+        .filter(
+          (booking) =>
+            booking.eventTypeId === eventType.id &&
+            isBlockingBookingStatus(booking.status),
+        )
+        .map((booking) => ({
+          start: addMinutes(
+            new Date(booking.startTime),
+            -eventType.bufferBeforeMinutes,
+          ),
+          end: addMinutes(new Date(booking.endTime), eventType.bufferAfterMinutes),
+        })),
+    ];
+
+    const availableWindows = subtractWindows(windows, blockers)
+      .map((window) => clipWindow(window, rangeStart, rangeEnd))
+      .filter((window): window is UtcWindow => Boolean(window));
+
+    for (const window of availableWindows) {
+      let cursor = new Date(window.start);
+      while (
+        cursor.getTime() + eventType.durationMinutes * 60_000 <=
+        window.end.getTime()
+      ) {
+        const slotEnd = addMinutes(cursor, eventType.durationMinutes);
+        const now = new Date();
+        const minimumStart = addMinutes(now, eventType.minNoticeMinutes);
+        const maximumStart = addMinutes(
+          now,
+          eventType.maxDaysInFuture * 24 * 60,
+        );
+
+        if (cursor >= minimumStart && cursor <= maximumStart) {
+          slots.push({
+            startTime: cursor.toISOString(),
+            endTime: slotEnd.toISOString(),
+            timezone: eventType.timezone,
+          });
+        }
+
+        cursor = addMinutes(cursor, eventType.slotIntervalMinutes);
+      }
+    }
+  }
+
+  return slots
+    .sort((left, right) => left.startTime.localeCompare(right.startTime))
+    .slice(0, 24);
+}

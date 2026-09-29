@@ -1,0 +1,382 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum TeamRole {
+  owner
+  admin
+  member
+}
+
+enum BookingStatus {
+  draft
+  pending
+  confirmed
+  canceled
+  completed
+  no_show
+}
+
+enum LocationType {
+  video
+  phone
+  in_person
+  custom
+}
+
+enum TimezonePolicy {
+  organizer
+  invitee
+  locked
+}
+
+enum AssignmentStrategy {
+  owner
+  round_robin
+}
+
+enum CalendarProvider {
+  google
+  m365
+}
+
+enum NotificationChannel {
+  email
+  sms
+  webhook
+}
+
+enum NotificationStatus {
+  queued
+  sent
+  failed
+}
+
+enum AvailabilityOverrideKind {
+  available
+  unavailable
+}
+
+enum IntegrationStatus {
+  connected
+  expired
+  disconnected
+}
+
+enum PlanTier {
+  starter
+  growth
+  enterprise
+}
+
+model User {
+  id               String              @id @default(cuid())
+  email            String              @unique
+  username         String              @unique
+  name             String
+  timezone         String
+  emailVerifiedAt  DateTime?
+  imageUrl         String?
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  deletedAt        DateTime?
+  accounts         Account[]
+  teamsOwned       Team[]              @relation("TeamOwner")
+  memberships      TeamMembership[]
+  organizedEvents  EventType[]
+  availability     AvailabilityTemplate[]
+  overrides        AvailabilityOverride[]
+  blockedTimes     BlockedTimeRange[]
+  bookings         Booking[]           @relation("BookingOrganizer")
+  integrations     CalendarIntegration[]
+  auditEntries     AuditLog[]
+
+  @@index([timezone])
+  @@index([deletedAt])
+}
+
+model Account {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          String
+  providerAccountId String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  deletedAt         DateTime?
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Team {
+  id                String            @id @default(cuid())
+  name              String
+  slug              String            @unique
+  ownerId           String
+  brandingColor     String
+  bookingDomain     String
+  roundRobinEnabled Boolean           @default(false)
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  deletedAt         DateTime?
+  owner             User              @relation("TeamOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  memberships       TeamMembership[]
+  eventTypes        EventType[]
+  availability      AvailabilityTemplate[]
+  overrides         AvailabilityOverride[]
+  blockedTimes      BlockedTimeRange[]
+  bookings          Booking[]
+  auditEntries      AuditLog[]
+  subscriptions     SubscriptionPlan[]
+
+  @@index([ownerId])
+  @@index([deletedAt])
+}
+
+model TeamMembership {
+  id         String   @id @default(cuid())
+  teamId     String
+  userId     String
+  role       TeamRole
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  deletedAt  DateTime?
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([teamId, role])
+  @@index([userId])
+}
+
+model EventType {
+  id                      String              @id @default(cuid())
+  teamId                  String
+  organizerId             String
+  title                   String
+  slug                    String
+  profileSlug             String
+  description             String
+  durationMinutes         Int
+  slotIntervalMinutes     Int
+  bufferBeforeMinutes     Int                 @default(0)
+  bufferAfterMinutes      Int                 @default(0)
+  maxParticipants         Int                 @default(1)
+  minNoticeMinutes        Int                 @default(0)
+  maxDaysInFuture         Int                 @default(30)
+  timezone                String
+  timezonePolicy          TimezonePolicy
+  locationType            LocationType
+  locationLabel           String
+  color                   String
+  assignmentStrategy      AssignmentStrategy  @default(owner)
+  cancellationPolicyHours Int                 @default(24)
+  published               Boolean             @default(false)
+  customThankYouMessage   String
+  createdAt               DateTime            @default(now())
+  updatedAt               DateTime            @updatedAt
+  deletedAt               DateTime?
+  team                    Team                @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  organizer               User                @relation(fields: [organizerId], references: [id], onDelete: Restrict)
+  bookings                Booking[]
+
+  @@unique([teamId, slug])
+  @@unique([profileSlug, slug])
+  @@index([teamId, published])
+  @@index([organizerId])
+  @@index([deletedAt])
+}
+
+model AvailabilityTemplate {
+  id                  String   @id @default(cuid())
+  teamId              String
+  organizerId         String
+  timezone            String
+  slotIntervalMinutes Int
+  weeklyRulesJson     Json
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  deletedAt           DateTime?
+  team                Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  organizer           User     @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+
+  @@index([teamId])
+  @@index([organizerId])
+}
+
+model AvailabilityOverride {
+  id          String                   @id @default(cuid())
+  teamId      String
+  organizerId String
+  date        DateTime
+  kind        AvailabilityOverrideKind
+  rangesJson  Json
+  reason      String
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
+  deletedAt   DateTime?
+  team        Team                     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  organizer   User                     @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+
+  @@index([teamId, date])
+  @@index([organizerId, date])
+}
+
+model BlockedTimeRange {
+  id          String   @id @default(cuid())
+  teamId      String
+  organizerId String
+  startTime   DateTime
+  endTime     DateTime
+  reason      String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  deletedAt   DateTime?
+  team        Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  organizer   User     @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+
+  @@index([teamId, startTime])
+  @@index([organizerId, startTime])
+}
+
+model Booking {
+  id                       String         @id @default(cuid())
+  teamId                   String
+  eventTypeId              String
+  organizerId              String
+  status                   BookingStatus
+  startTime                DateTime
+  endTime                  DateTime
+  timezone                 String
+  title                    String
+  locationType             LocationType
+  locationLabel            String
+  confirmationToken        String         @unique
+  cancellationReason       String?
+  rescheduledFromBookingId String?
+  guestCanCancel           Boolean        @default(true)
+  guestCanReschedule       Boolean        @default(true)
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+  deletedAt                DateTime?
+  team                     Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  eventType                EventType      @relation(fields: [eventTypeId], references: [id], onDelete: Restrict)
+  organizer                User           @relation("BookingOrganizer", fields: [organizerId], references: [id], onDelete: Restrict)
+  attendees                BookingAttendee[]
+  notifications            Notification[]
+  auditEntries             AuditLog[]
+
+  @@index([teamId, startTime])
+  @@index([eventTypeId, startTime])
+  @@index([organizerId, startTime])
+  @@index([status, startTime])
+  @@index([deletedAt])
+}
+
+model BookingAttendee {
+  id         String   @id @default(cuid())
+  bookingId  String
+  email      String
+  name       String
+  timezone   String
+  phone      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  deletedAt  DateTime?
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([email])
+}
+
+model CalendarIntegration {
+  id            String            @id @default(cuid())
+  organizerId   String
+  provider      CalendarProvider
+  status        IntegrationStatus
+  externalEmail String
+  accessToken   String?
+  refreshToken  String?
+  expiresAt     DateTime?
+  lastSyncedAt  DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  deletedAt     DateTime?
+  organizer     User              @relation(fields: [organizerId], references: [id], onDelete: Cascade)
+
+  @@unique([organizerId, provider])
+  @@index([status])
+}
+
+model Notification {
+  id           String             @id @default(cuid())
+  bookingId    String
+  channel      NotificationChannel
+  status       NotificationStatus
+  scheduledFor DateTime
+  sentAt       DateTime?
+  payloadJson  Json
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  deletedAt    DateTime?
+  booking      Booking            @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@index([status, scheduledFor])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  teamId     String
+  bookingId  String
+  actorId    String
+  action     String
+  metadata   Json
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  deletedAt  DateTime?
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  booking    Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  actor      User     @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([teamId, createdAt])
+  @@index([bookingId, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model PaymentProfile {
+  id            String   @id @default(cuid())
+  teamId         String
+  provider       String
+  externalRef    String
+  currency       String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+  team           Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, provider])
+  @@index([teamId])
+}
+
+model SubscriptionPlan {
+  id             String   @id @default(cuid())
+  teamId         String
+  tier           PlanTier
+  activeSeats    Int
+  eventTypeLimit Int
+  smsEnabled     Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+  team           Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([teamId])
+}

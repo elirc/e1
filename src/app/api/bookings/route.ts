@@ -1,0 +1,33 @@
+import { bookingFailure } from "@/lib/booking-service";
+import { NextRequest } from "next/server";
+import { problem, respond } from "@/lib/http";
+import { createBooking } from "@/lib/mock-services";
+import { rateLimit } from "@/lib/rate-limit";
+
+export async function POST(request: NextRequest) {
+  const ip = request.headers.get("x-forwarded-for") ?? "local";
+  const limit = rateLimit(`create-booking:${ip}`, 12, 60_000);
+
+  if (!limit.allowed) {
+    return problem(request, 429, "Rate limit exceeded for booking attempts.");
+  }
+
+  const body = (await request.json().catch(() => ({}))) as {
+    eventTypeId?: string;
+    startTime?: string;
+    attendeeEmail?: string;
+    attendeeName?: string;
+  };
+
+  try {
+    return respond(
+      request,
+      createBooking(body),
+      { status: 201 },
+      { booked: true, remaining: limit.remaining },
+    );
+  } catch (error) {
+    const failure = bookingFailure(error);
+    return problem(request, failure.status, failure.message);
+  }
+}

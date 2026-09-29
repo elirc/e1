@@ -1,0 +1,44 @@
+import type { Booking, BookingStatus } from "@/lib/domain";
+
+const allowedTransitions: Record<BookingStatus, BookingStatus[]> = {
+  draft: ["pending", "confirmed", "canceled"],
+  pending: ["confirmed", "canceled"],
+  confirmed: ["completed", "canceled", "no_show"],
+  canceled: [],
+  completed: [],
+  no_show: ["canceled"],
+};
+
+export function canTransitionBooking(
+  currentStatus: BookingStatus,
+  nextStatus: BookingStatus,
+) {
+  return allowedTransitions[currentStatus].includes(nextStatus);
+}
+
+export function isBlockingBookingStatus(status: BookingStatus) {
+  return status === "pending" || status === "confirmed";
+}
+
+export function transitionBooking(
+  booking: Booking,
+  nextStatus: BookingStatus,
+  reason?: string,
+) {
+  if (!canTransitionBooking(booking.status, nextStatus)) {
+    throw new Error(
+      `Invalid booking transition: ${booking.status} -> ${nextStatus}`,
+    );
+  }
+
+  if (nextStatus === "canceled" && !reason) {
+    throw new Error("Canceled bookings must preserve a reason.");
+  }
+
+  return {
+    ...booking,
+    status: nextStatus,
+    cancellationReason: nextStatus === "canceled" ? reason ?? null : null,
+    updatedAt: new Date().toISOString(),
+  };
+}
