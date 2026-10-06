@@ -35,18 +35,20 @@ After this stage, you should understand:
 Read:
 
 1. `src/lib/demo-data.ts`
-2. `src/lib/mock-services.ts`
+2. `src/lib/booking-repository.ts`
+3. `src/lib/mock-services.ts`
 
 Why this stage comes next:
 
-- The repository currently runs on in-memory data.
+- Bookings and attendees live in an in-memory repository (seeded at `demo-data.ts:473-475`); everything else is static seed data.
 - These files are the best bridge between the abstract model and the current application behavior.
 
 What to learn:
 
 - How demo records are shaped
 - Which helpers are pure lookups versus higher-level operations
-- How the app currently fakes persistence, identity, and external systems
+- How `read()` clones and `transaction()` publishes only on success (`booking-repository.ts:10-21`)
+- Which `mock-services.ts` exports are real (the four booking commands at `:130-135`) and which return canned objects (auth, teams, event-type edits, integrations)
 
 Checkpoint:
 
@@ -63,6 +65,7 @@ Read:
 1. `src/lib/booking-state.ts`
 2. `src/lib/time.ts`
 3. `src/lib/availability.ts`
+4. `src/lib/booking-service.ts`
 
 Why this stage comes before pages and APIs:
 
@@ -75,6 +78,7 @@ What to learn:
 - what “blocking” means
 - how local availability windows turn into UTC slots
 - where daylight-saving and notice-window bugs could appear
+- how `booking-service.ts` combines these into commands: `authorize` (token + guest flags), `offered` (is this exact instant a generated slot?), and `transition` (state-machine pre-check that turns violations into 409)
 
 Checkpoint:
 
@@ -167,11 +171,12 @@ Start at `src/app/api/bookings/route.ts`.
 
 Trace:
 
-1. request body parsing
-2. rate limiting
-3. `createBooking(...)`
-4. conflict detection against existing bookings
-5. response formatting
+1. rate limiting (`src/app/api/bookings/route.ts:8-13`)
+2. request body parsing (`:15`)
+3. `createBooking(...)` → `bookingService.create` (`src/lib/booking-service.ts:60`)
+4. `offered(...)` → `generateSlots(...)` with every active booking for the organizer (`booking-service.ts:31-45`)
+5. `repository.transaction` publishing the new booking and attendee (`booking-repository.ts:12-21`)
+6. `bookingFailure` / `respond` response formatting
 
 Goal:
 
@@ -183,9 +188,9 @@ Start at `src/lib/booking-state.ts`.
 
 Trace:
 
-1. allowed transitions
-2. blocking statuses
-3. where route handlers or services rely on those rules
+1. allowed transitions (`booking-state.ts:3-10`)
+2. blocking statuses (`:19-21`), used by `availability.ts:147`
+3. the service's `transition` wrapper (`booking-service.ts:55-58`) and the confirm/cancel/reschedule commands that call it
 
 Goal:
 
@@ -206,17 +211,11 @@ Goal:
 
 - Learn how the same concept appears at different architectural levels.
 
-## How to Read Productively
+### Exercise 5: Run the tests before reading them
 
-- Read entry points and helpers side by side. Do not read only pages or only services.
-- Write down invariants as you notice them. Examples: “canceled bookings need a reason” or “public event lookup uses two slugs.”
-- Mark each observation as either “seen directly in code” or “likely intended architecture.”
-- When you feel confused, trace one real example rather than reading another file at random.
+Run `node --loader ./scripts/alias-loader.mjs --experimental-strip-types --test src/tests/*.test.ts` on a fresh clone. Without `npm install` you should see 18 tests, 17 passing; the HTTP-handler test fails because `next` is not installed. Then read `src/tests/booking-flow.test.ts` top to bottom; each test name states one invariant from the stages above.
 
 ## What Not to Do
 
-- Do not start with every API route. Many are thin wrappers and will not teach much until you know the shared patterns.
-- Do not spend too long on styling details before you understand the scheduling logic.
+- Do not start with every API route. Most of the 31 route files are thin wrappers around `mock-services.ts`, and many of those return canned data.
 - Do not assume the mock-service layer is the final architecture.
-
-The right question is not “What does every file do?” The right question is “Which files explain how the system thinks?”

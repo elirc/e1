@@ -2,101 +2,29 @@
 
 ## What This File Is For
 
-This is the main owner dashboard page in the current scaffold.
-
-It composes a high-level snapshot of events, upcoming bookings, integration health, and operational metrics.
-
-## Why This File Matters
-
-This page teaches how multiple domain read models combine into a single ownership surface:
-
-- event inventory
-- upcoming bookings
-- audit visibility
-- integration status
-
-It is a practical "read model consumer" example and shows where UI can accidentally become over-coupled to seeded structures.
-
-## Key Exports / Main Units
-
-- Default function: `DashboardPage()`
-- Uses:
-  - `DashboardShell`
-  - `getDashboardSnapshot`
-  - `getPublicBookingPage`
-  - `endpointGroups`
-  - utility formatters
+The owner dashboard at `/dashboard`: four metric cards, a list of upcoming bookings linking to `/dashboard/bookings/{id}`, the event-type list, and integration status. It is a server component that reads one snapshot and renders it; it performs no mutations.
 
 ## How It Works
 
-- Calls `getDashboardSnapshot()` and a specific public page lookup.
-- Renders:
-  - metric cards for counts and statuses,
-  - booking links and attendee labels,
-  - event type status pills,
-  - integration list.
-- Maps all rendering from service-level data instead of performing side effects.
+- Calls `getDashboardSnapshot()` from `src/lib/demo-data.ts` once (line 8). Imports are only `DashboardShell`, `MetricCard`/`Pill`/`Surface`, `getDashboardSnapshot` and two formatters from `src/lib/utils.ts`.
+- Metric cards (`:16-37`): published event count, `upcomingBookings.length`, connected/total integrations, and `planLimit.activeSeats`.
+- Upcoming list (from `:59`): maps `snapshot.upcomingBookings`, taking the first attendee from `snapshot.attendeesByBookingId[booking.id]`.
+- Event types and integrations are rendered straight from the snapshot arrays.
 
-There is no direct data mutation in this file.
+Because the root layout sets `dynamic = "force-dynamic"` (`src/app/layout.tsx:1`), each request rebuilds the snapshot from the current repository, so a booking created through the API shows up on the next page load in the same process.
 
 ## How It Connects To Other Files
 
-- `src/lib/demo-data.ts`: source of snapshot and public page sample.
-- `src/components/dashboard-shell.tsx`: layout composition wrapper.
-- `src/components/ui.tsx`: card and surface primitives.
-- `src/app/api/docs/route.ts` and `src/lib/api-manifest.ts`: endpoint groups displayed in the UI.
-
-## Important Design Choices
-
-- Snapshot-first architecture for dashboard rendering.
-- Strong preference for map/filter transforms directly in JSX for readability.
-- Navigation and data concerns are separated through components and data functions.
+- `src/lib/demo-data.ts` `getDashboardSnapshot` (`:497-530`).
+- `src/components/dashboard-shell.tsx` and `src/components/ui.tsx` for layout primitives.
+- `src/app/dashboard/bookings/[bookingId]/page.tsx` is the detail page each booking links to.
 
 ## Things A Junior Dev Should Notice
 
-- Some labels and assumptions are hardcoded and can mask backend mismatch.
-- This page expects `getDashboardSnapshot()` to include consistent attendee linkage.
-- Slots and integration counts are presented as metrics but are not all independent sources.
+- The "Upcoming" card's description says "Bookings in active or pending states", but the snapshot filters by start time only. A canceled booking in the future is still counted and listed.
+- There is no authentication on this page or its layout (`src/app/dashboard/layout.tsx` returns `children`). The linked detail page prints the guest's confirmation token (`src/app/dashboard/bookings/[bookingId]/page.tsx:41`).
+- Metric descriptions such as "reflected in the conflict engine" describe intent; integrations do not feed `generateSlots` today.
 
-## Code Review Lens
+## Exercise
 
-Review focus:
-
-- If a field becomes null in data layer, does page handle it gracefully?
-- Are list keys stable for React reconciliation?
-- Are computed fields (`snapshot.*`) in sync with actual service filters?
-
-Common issues:
-
-- Rendering guest data that depends on non-null snapshots.
-- Unclear separation between presentation and business policy (e.g., SLA text in the UI).
-- Using mock-only assumptions as production contracts (for example, hardcoded role wording).
-
-## Common Change Scenarios
-
-- Add a new dashboard metric:
-  - Extend `DashboardSnapshot`, then update UI cards and any API surfaces.
-- Add sorting/filtering controls:
-  - Keep list keys and data derivation pure and stable.
-- Replace seed snapshot with API call:
-  - Introduce loading/error state boundaries.
-
-Before editing, inspect:
-
-- `src/lib/demo-data.ts#getDashboardSnapshot`,
-- service layer returning snapshot fields,
-- and routing links to booking detail pages.
-
-## Suggested Exercises
-
-- Trace how one booking card appears from seed data to rendered card fields.
-- Add one defensive check for missing attendee and propose fallback behavior.
-- Replace a hardcoded "next booking" date source with a dedicated helper and compare outcomes.
-
-## Observed Facts vs Inference
-
-Observed:
-- This page is currently server-rendered from synchronous mock snapshot data.
-
-Inference:
-- It is designed for quick product visualization and will need loading and stale-state handling when moved to real APIs.
+Change the Upcoming metric to count only bookings for which `isBlockingBookingStatus(booking.status)` is true (import it from `src/lib/booking-state.ts`). Decide whether the list below it should use the same filter or show canceled bookings with a badge, and write down why.

@@ -2,112 +2,46 @@
 
 ## What This File Is For
 
-This file is the service boundary for current behavior. It simulates business operations for auth, teams, event types, availability, bookings, and integrations.
+This is the facade that route handlers and pages import. It mixes two very different kinds of export:
 
-It is intentionally higher-level than raw data helpers and lower-level than API protocol logic.
+- **Real booking commands.** `createBooking`, `confirmBooking`, `cancelBooking` and `rescheduleBooking` are the methods of one `createBookingService` instance wired to the shared `bookingRepository` and the seed events, templates, overrides and blocked times (lines 130-135). All validation, authorization and state changes happen in `src/lib/booking-service.ts`.
+- **Canned mocks.** Everything else returns fabricated objects and changes nothing.
 
-## Why This File Matters
+Knowing which is which is the main thing to learn from this file.
 
-Most API routes delegate to this file, so it is where real invariants should ideally be enforced in this repo.
+## Key Exports
 
-It teaches:
-
-- where write operations happen,
-- how errors are shaped,
-- how service responses are composed from demo records.
-
-## Key Exports / Main Units
-
-- Identity and auth helpers:
-  - `registerOwner`, `loginOwner`
-- Team and membership:
-  - `createTeam`, `inviteMember`, `assignMembershipRole`
-- Event type operations:
-  - `listEventTypes`, `getEventType`, `createEventType`, `updateEventType`
-- Availability helpers:
-  - `getAvailabilityWindow`, `previewSlots`, `setWeeklyAvailability`, `createAvailabilityOverride`
-- Booking operations:
-  - `createBooking`, `confirmBooking`, `cancelBooking`, `rescheduleBooking`
-  - `getBookingDetail`, `getBookingDetailByToken`, `listUpcomingBookings`, `listPastBookings`
-- Integration helpers:
-  - `connectIntegration`, `refreshIntegration`, `disconnectIntegration`
-- Health and dashboard read helper:
-  - `getHealthSnapshot`
-
-## How It Works
-
-The module mostly reads from `src/lib/demo-data.ts` and applies simple business transformations:
-
-- `createBooking` validates event type existence and checks for overlap with active bookings.
-- `confirmBooking` and `cancelBooking` delegate state transitions to `booking-state.ts`.
-- `rescheduleBooking` cancels old booking (with reason) and creates a replacement with new start time.
-- `getBookingDetail` and token detail combine booking + attendee + event type references into one response.
-
-Most functions are synchronous and return plain objects rather than persisted entities.
+| Export | Real or canned | Notes |
+|---|---|---|
+| `createBooking`, `confirmBooking`, `cancelBooking`, `rescheduleBooking` | real | re-exported service methods (`:132-135`) |
+| `getBookingDetail(id)`, `getBookingDetailByToken(token)` | real reads | booking + attendees from the repository (`:145-175`); the by-ID variant also adds `eventType` |
+| `listUpcomingBookings`, `listPastBookings` | real reads | slices of `getDashboardSnapshot()` (`:137-143`) |
+| `getAvailabilityWindow`, `previewSlots` | real reads | wrap `getPublicBookingPage`, defaulting to `jordan-lee` / `strategy-sync` when slugs are missing (`:111-128`) |
+| `listEventTypes`, `getEventType` | real reads | seed event types |
+| `registerOwner`, `loginOwner` | canned | `loginOwner` returns random tokens for *any* email (`:35-46`) |
+| `createTeam`, `inviteMember`, `assignMembershipRole` | canned | |
+| `createEventType`, `updateEventType` | canned | `updateEventType` with an unknown ID falls back to the first event type (`:90-97`) |
+| `setWeeklyAvailability`, `createAvailabilityOverride` | canned | |
+| `connectIntegration`, `refreshIntegration`, `disconnectIntegration` | canned | |
+| `getHealthSnapshot` | canned | metrics are hard-coded numbers (`:202-207`) |
 
 ## How It Connects To Other Files
 
-- Called by almost every important API route in `src/app/api/*`.
-- Used by server pages through indirect dependencies (`src/lib/demo-data.ts` is also used by pages).
-- Depends on:
-  - `src/lib/booking-state.ts` for transitions
-  - `src/lib/demo-data.ts` for seeded records
-  - `src/lib/availability.ts` and `src/lib/time.ts` for slot behavior
-
-## Important Design Choices
-
-- Fast path over persistence: every function is deterministic and side-effect light.
-- Business logic and data shape generation are centralized instead of duplicated in each route.
-- Some write-like actions return synthetic IDs and values instead of mutating long-term storage.
+- Imported by nearly every handler under `src/app/api/` and by `src/app/dashboard/bookings/[bookingId]/page.tsx`.
+- Depends on `src/lib/booking-service.ts` (commands) and `src/lib/demo-data.ts` (repository, seed data, read helpers).
 
 ## Things A Junior Dev Should Notice
 
-- `list*` and `get*` mostly forward raw demo data.
-- `createBooking` checks conflicts only for same `eventTypeId` and `confirmed/pending` statuses.
-- `rescheduleBooking` marks previous booking as canceled and creates a new booking rather than updating start time in place.
-- Several auth/team helpers return placeholders when dependencies are missing.
+- The service instance is created once at module load with `events: getEventTypes()`. That is the same array object the seed exports, so it is not a stale copy, but the canned event-type mutators never write to it, so "editing" an event type has no effect on booking.
+- `getBookingDetail` and the list functions return whole `Booking` objects, **including `confirmationToken`**. The dashboard API routes that use them are unauthenticated, so the token that guards cancel/reschedule is readable by anyone. See `astraupskill/06-SOLUTIONS-AND-REVIEW.md` finding 1.
+- Because the canned functions return plausible-looking objects with 200 status, an API client cannot tell a no-op from a real change.
 
-## Code Review Lens
+## Review Notes
 
-Critical review points:
+- Any new read helper that returns bookings to an owner surface should strip the token.
+- A canned function should not invent success for an unknown ID; returning `null` (→ 404) is more honest than `updateEventType`'s fallback.
+- New booking commands belong in `booking-service.ts`, not here, so they run inside a repository transaction and through `authorize`.
 
-- Are conflict checks exhaustive enough for production rules?
-- Are state transitions the single path, or are there direct object edits elsewhere?
-- Does a function return the right shape for route consumers, especially on errors?
+## Exercise
 
-Potential review misses:
-
-- Multi-instance races are not addressed in in-memory logic.
-- Role and permission checks are absent; routes currently trust endpoint-level intent.
-- Placeholder auth/account behavior might mask missing edge-case handling.
-
-## Common Change Scenarios
-
-- Add real persistence:
-  - Replace reads/writes in this file first, keep route signatures stable, then update tests.
-- Add new booking guard:
-  - Update `createBooking` and ensure preview and dashboard surfaces also respect it.
-- Introduce host reassignment logic:
-  - `createBooking` and event-type lookup logic will need owner consistency checks.
-
-Before editing, inspect:
-
-- affected route handlers,
-- `src/lib/booking-state.ts`,
-- and any page logic that depends on response fields.
-
-## Suggested Exercises
-
-- Add a new service function for "cancel a booking by token" and decide who owns authorization checks.
-- Trace the full `rescheduleBooking` output and identify which records changed.
-- Add one impossible transition in tests by reading and applying `transitionBooking` through this service.
-
-## Observed Facts vs Inference
-
-Observed:
-- Service methods are in-memory and synchronous.
-- The module combines domain logic and adapter-like shaping.
-
-Inference:
-- The pattern is a stepping stone toward repository/services + database adapters.
-- Permission and auth are intentionally not implemented here yet; routes may need a middleware boundary later.
+Make a two-column list of every `src/app/api/**/route.ts` file and whether the function it calls is real or canned. Then check how many canned endpoints are listed in `src/lib/api-manifest.ts` as if they were working features.

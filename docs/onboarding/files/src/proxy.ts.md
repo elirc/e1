@@ -30,9 +30,9 @@ Behavior:
 
 ## How It Connects To Other Files
 
-- Intended to be used as a Next.js middleware entry point.
-- Complements `src/lib/http.ts`, which reads the same correlation header for response metadata.
-- If configured, all API and page routes can share consistent correlation IDs.
+- Next.js 16 renamed the middleware convention to `proxy.ts` with an exported `proxy` function; in a project with a `src/` directory it lives at `src/proxy.ts`. So this file is wired in by convention, not by import.
+- Complements `src/lib/http.ts`, which reads the same request header (`http.ts:9-10`) and echoes it in `meta.correlationId` and the `x-correlation-id` response header.
+- The header is only read by handlers that use `respond`/`problem`; pages ignore it.
 
 ## Important Design Choices
 
@@ -42,9 +42,9 @@ Behavior:
 
 ## Things A Junior Dev Should Notice
 
-- This file is in `src`, so a proper default middleware export name/placement might be needed by framework conventions.
-- There is no direct import of this function in route files.
-- The behavior is safe only if middleware is actually wired in the app runtime.
+- No route imports this function; the framework calls it.
+- A client-supplied `x-correlation-id` is passed through untouched (line 5-6), with no length or format check, so it can carry arbitrary text into anything that logs it.
+- Route handlers called directly in tests (as in `src/tests/booking-flow.test.ts:109-129`) bypass the proxy, which is why `respond` also generates an ID when the header is missing.
 
 ## Code Review Lens
 

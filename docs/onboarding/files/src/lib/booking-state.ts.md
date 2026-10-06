@@ -34,7 +34,7 @@ This file prevents invalid state jumps (for example, completing a draft) and enf
 
 ## How It Connects To Other Files
 
-- Called from `src/lib/mock-services.ts` (`confirmBooking`, `cancelBooking`, `rescheduleBooking`).
+- Called from `src/lib/booking-service.ts`: `transition` (lines 55-58) pre-checks with `canTransitionBooking` and throws `BookingError(409)` before calling `transitionBooking`, so this file's plain `Error` never reaches a route through the service. `mock-services.ts` re-exports those service commands.
 - Influences `src/lib/availability.ts` through `isBlockingBookingStatus`.
 - Indirectly affects UI rendering of active/inactive states.
 
@@ -47,7 +47,7 @@ This file prevents invalid state jumps (for example, completing a draft) and enf
 ## Things A Junior Dev Should Notice
 
 - `no_show` can transition only to `canceled` in this version.
-- `transitionBooking` mutates by replacement and updates timestamps but does not persist.
+- `transitionBooking` returns a new object and never mutates its input; the caller (the service, inside a repository transaction) is what stores it.
 - `canceled` as terminal state except no-show recovery means cancellation history is important in callers.
 
 ## Code Review Lens

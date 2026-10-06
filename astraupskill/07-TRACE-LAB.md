@@ -1,18 +1,54 @@
 # Trace one failed replacement and one successful replacement
 
-Choose a fresh deterministic fixture and create a 10:00 appointment. Record its booking ID, confirmation token, status, attendee ID, createdAt and updatedAt. Read the repository immediately afterward; the retained graph should contain one booking and one attendee. Keep that complete graph as the comparison baseline rather than retaining references to mutable objects.
+This lab is the narrative version of `src/tests/booking-flow.test.ts:69-80`. Do it with a debugger or with `console.log` in a scratch test using the fixture from [05-PRACTICE](05-PRACTICE.md); either way, write down each value before you look at the next step.
 
-Now request a reschedule to 19:00 with the correct token. Step through authorize, the active-status check and offered. Authorization succeeds, but the target falls outside the configured 09:00 through 18:00 window. offered raises a conflict before the source booking is transitioned. The repository callback exits through the exception path, leaving both arrays equal to the baseline. The route translates the typed error into 409 without exposing an internal stack.
+## 1. Baseline
 
-Repeat with an 11:00 target and a later injected clock. The availability input contains all active organizer bookings except the source. After a slot match, transition creates the canceled predecessor. A separate replacement receives a random ID and token, fresh timestamps and the predecessor ID. Each linked attendee is copied with a new ID. The callback updates the predecessor, appends the replacement and appends those copied attendees. Only then does the repository publish the completed draft.
+Choose a fresh deterministic fixture (clock Monday 2026-09-21 08:00 UTC, hours 09:00-18:00 UTC) and create a 10:00 appointment. Record its booking ID, confirmation token, status, attendee ID, `createdAt` and `updatedAt`. Read the repository immediately afterward; the retained graph should contain one booking and one attendee. Keep that complete graph (`const before = f.repository.read()`) as the comparison baseline rather than retaining references to mutable objects — `read()` already gives you a detached clone.
 
-Read by both tokens. The old token should still identify the canceled historical booking; it must not identify or authorize the new appointment. A confirm attempt against the predecessor should fail with a terminal conflict. A cancel attempt against the replacement using the old token should fail with forbidden. These checks distinguish history preservation from authority transfer.
+## 2. Failed replacement: 19:00
 
-Finally inspect the public slot preview. The new occupied interval should disappear for all events sharing the organizer, while the old interval may return if no other blockers or notice rules exclude it. Explain that final qualification before concluding that a particular missing slot is a repository bug.
+Request a reschedule to `2026-09-21T19:00:00Z` with the correct token. Step through:
+
+| Step | Location | Result |
+|---|---|---|
+| Clone draft | `booking-repository.ts:13` | draft is a deep copy |
+| `authorize` | `booking-service.ts:103` → `:46-54` | booking found, token matches, `guestCanReschedule` true |
+| Active-status check | `:104` | `confirmed` passes |
+| `offered` | `:106` → `:31-45` | timestamp has an offset; template found; `generateSlots` for 19:00-19:30 returns `[]` because 19:00 is after the 18:00 window end |
+| Throw | `:43` | `BookingError(409, "Requested time is unavailable.")` |
+| Repository | `booking-repository.ts:14` | exception propagates out of `work(draft)`; line 19 never runs |
+
+`f.repository.read()` is now deep-equal to `before`. Through HTTP, the route's `catch` (`src/app/api/bookings/[bookingId]/reschedule/route.ts:15-18`) passes the error to `bookingFailure`, which returns status 409 and the message — no stack trace.
+
+## 3. Successful replacement: 11:00
+
+Repeat with an 11:00 target and a later injected clock (08:30). The test builds a *new* service for this (`booking-flow.test.ts:73`) because the clock is captured when the service is created.
+
+- The blocker list passed to `offered` is `state.bookings.filter(item => item.id !== id)` — every active organizer booking except the source.
+- After the slot matches, `transition` creates the canceled predecessor with reason `"Rescheduled by guest"`.
+- The replacement gets a random ID and token, `createdAt`/`updatedAt` of 08:30, and `rescheduledFromBookingId` pointing at the predecessor.
+- Each linked attendee is copied with a new ID and the replacement's `bookingId`.
+- The callback replaces the predecessor in place, appends the replacement and the copied attendees, and returns. Only then does line 19 publish the draft.
+
+Predict the counts before you read them: the retained graph should now have **two** bookings and **two** attendee rows.
+
+## 4. Old token versus new token
+
+Read by both tokens with `getBookingByToken` (or `getBookingDetailByToken` for attendees). The old token still identifies the canceled historical booking; it does not identify the new appointment. Then:
+
+- `service.confirm(predecessor.id, oldToken)` → 409. Token is valid, but `canceled → confirmed` is not in the transition table (`booking-state.ts:7`).
+- `service.cancel(replacement.id, "x", oldToken)` → 403. Right booking, wrong token.
+
+These two checks distinguish history preservation from authority transfer.
+
+## 5. The public view
+
+Finally inspect the public slot preview with `getPublicBookingPage(profileSlug, eventSlug)` on the shared demo repository (reset it afterwards). The new occupied interval should disappear for every event type sharing the organizer, while the old interval may return if no other blocker, notice rule or the 24-slot cap (`availability.ts:173`) hides it. Explain that final qualification before concluding that a particular missing slot is a repository bug.
 
 ## Source excerpt
 
-From [src/lib/booking-service.ts](../src/lib/booking-service.ts).
+From [src/lib/booking-service.ts](../src/lib/booking-service.ts) (lines 31-45).
 
 ```ts
   function offered(event: EventType, value: unknown, bookings: Booking[], now: Date) {

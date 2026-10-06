@@ -1,11 +1,13 @@
 # Review Checklists
 
-These checklists are tailored to this repository, but they are written to stay useful in similar modern application codebases.
+These checklists are tailored to this repository. Where a known weakness already exists, it is cited with file:line so you can recognize the pattern; the full write-up is in `astraupskill/06-SOLUTIONS-AND-REVIEW.md`.
 
 ## Business Logic / Services
 
 Files in this repo:
 
+- `src/lib/booking-service.ts`
+- `src/lib/booking-repository.ts`
 - `src/lib/mock-services.ts`
 - `src/lib/availability.ts`
 - `src/lib/booking-state.ts`
@@ -31,9 +33,10 @@ Good questions to ask:
 
 Subtle bugs a junior dev might miss:
 
-- A status transition becomes technically allowed but semantically wrong.
-- A reschedule path cancels the old booking but forgets to validate the replacement.
-- “Current time” is captured too early and becomes stale in long-lived server processes.
+- A status transition becomes technically allowed but semantically wrong. Example in this repo: reschedule hard-codes the replacement to `confirmed` even when the source was `pending` (`booking-service.ts:108`).
+- A reschedule path cancels the old booking but forgets to validate the replacement. (The original snapshot did exactly this; the current code preflights with `offered` first.)
+- “Current time” is sampled more than once in one command. `reschedule` samples once (`booking-service.ts:105`); `confirm` samples twice (`:86`, `:88`).
+- A new read helper reads the seed arrays instead of `bookingRepository.read()`, so it never sees new bookings.
 
 ## API Routes / Controllers
 
@@ -62,9 +65,10 @@ Good questions to ask:
 
 Subtle bugs a junior dev might miss:
 
-- Parsing JSON with permissive defaults can hide missing required fields.
-- Dynamic route params may be trusted without checking tenancy or ownership.
-- Rate limiting can be applied to create routes but forgotten on preview routes.
+- Parsing JSON with permissive defaults can hide missing required fields. `POST /api/bookings` falls back to `{}` (`src/app/api/bookings/route.ts:15`) and relies on the service to return 400; the confirm/cancel/reschedule routes reject non-objects themselves (line 12 of each).
+- Dynamic route params may be trusted without checking tenancy or ownership. `GET /api/dashboard/bookings/[bookingId]` returns any booking, token included.
+- A canned handler returns success for an unknown ID. `PATCH /api/event-types/[eventTypeId]` falls back to the first event type (`mock-services.ts:90-97`).
+- Rate limiting is applied to create and preview but not to `availability/window`, confirm, cancel or reschedule.
 
 ## Database Schema and Persistence Logic
 
@@ -94,7 +98,8 @@ Good questions to ask:
 Subtle bugs a junior dev might miss:
 
 - `profileSlug + slug` uniqueness exists in schema but a runtime lookup uses only one part.
-- A booking token is unique in schema but regenerated inconsistently in services.
+- `confirmationToken` is `@unique` in the schema; the service generates a fresh UUID on create and on reschedule (`booking-service.ts:74`, `:109`). Keep it that way in any new command.
+- The schema indexes `[organizerId, startTime]` but has no constraint preventing overlapping bookings. The in-memory transaction is the only protection today.
 - A schema supports RBAC concepts that route handlers do not yet enforce.
 
 ## Frontend State and UI Behavior
@@ -156,18 +161,26 @@ Good questions to ask:
 - If two requests hit this code at the same time, what is the worst plausible outcome?
 - Does this algorithm assume single-instance execution?
 
+Observed from code:
+
+- Booking commands are synchronous callbacks inside `repository.transaction` (`booking-repository.ts:12-21`), so within one process no other command can interleave between the availability check and the write. The repository rejects async callbacks.
+- Nothing is shared between processes.
+
 Subtle bugs a junior dev might miss:
 
-- A conflict check compares only exact overlap and ignores buffers.
+- Adding an `await` inside a booking command would break the guarantee above; the repository would throw, but only after the callback started.
+- A conflict check compares only exact overlap and ignores buffers. (Current code applies both events' buffers: `availability.ts:146-151`, `:160-164`.)
 - Pending bookings block time in one code path but not another.
-- A rate limit keyed by `x-forwarded-for` can behave strangely behind proxies.
+- A rate limit keyed by raw `x-forwarded-for` (`src/app/api/bookings/route.ts:8`) can be bypassed by sending a new header value, and its `Map` (`src/lib/rate-limit.ts:1`) never evicts keys.
 
 ## Auth / Permissions / Security-Sensitive Paths
 
 Observed from code:
 
 - Role concepts exist in the domain and schema.
-- Runtime route handlers currently do not enforce authentication or RBAC.
+- No route or page enforces authentication or RBAC; `src/app/dashboard/layout.tsx` just renders its children.
+- Guest mutators require the booking's `confirmationToken` (`booking-service.ts:46-54`).
+- The token is returned by `GET /api/dashboard/upcoming`, `GET /api/dashboard/past`, `GET /api/dashboard/bookings/[bookingId]`, and printed on `src/app/dashboard/bookings/[bookingId]/page.tsx:41`. Anyone can therefore read a token and cancel someone else's booking.
 
 What to look for:
 
@@ -195,33 +208,7 @@ Subtle bugs a junior dev might miss:
 
 ## Realtime or Event-Driven Code
 
-Observed from code:
-
-- There is no true realtime subsystem yet.
-- Webhook routes and notification models suggest future event-driven behavior.
-
-What to look for in similar changes:
-
-- Is event emission idempotent?
-- Is retry behavior safe?
-- Does event ordering matter?
-
-Common failure modes:
-
-- Duplicate notifications
-- stale sync updates overwriting fresher state
-- missing audit events for important transitions
-
-Good questions to ask:
-
-- What happens if this event is delivered twice?
-- What is the source of truth when callbacks disagree?
-- Is there enough context in the event payload to debug failures later?
-
-Subtle bugs a junior dev might miss:
-
-- An integration refresh path updates status but not last-sync metadata.
-- A webhook acknowledges success before its side effects are durable.
+There is no realtime subsystem. `src/app/api/webhooks/bookings/route.ts` and `src/app/api/webhooks/calendar/route.ts` exist, and the schema has a `Notification` model, but no command emits events or notifications. When that changes, ask: is emission idempotent, and does the webhook acknowledge only after its side effects are durable?
 
 ## Error Handling and Observability
 
@@ -250,8 +237,8 @@ Good questions to ask:
 
 Subtle bugs a junior dev might miss:
 
-- A helper adds headers in success responses but not error responses.
-- A thrown error bypasses the normal response envelope.
+- `respond` echoes a client-supplied `x-correlation-id` unvalidated (`src/lib/http.ts:9-10`).
+- A thrown error bypasses the normal response envelope. Routes that do not wrap their service call in `try`/`bookingFailure` will surface as a framework 500.
 
 ## Types, Contracts, and Validation
 
@@ -287,8 +274,8 @@ Subtle bugs a junior dev might miss:
 
 Observed from code:
 
-- The repo currently verifies with lint and build.
-- There is no real automated test suite yet.
+- `src/tests/booking-flow.test.ts` has 18 tests run by `npm test` (Node's test runner with type stripping and `scripts/alias-loader.mjs`).
+- Seventeen run with no `npm install`; the HTTP-handler test needs `next`.
 
 What to look for:
 
@@ -296,13 +283,14 @@ What to look for:
 - Does the change affect public/private boundaries or multi-tenant behavior?
 - Does the change alter schema assumptions?
 
+Already covered: buffer-aware organizer conflicts, transition rules, blank cancel reason, token checks, transactional rollback, slot-grid anchoring.
+
 High-value missing tests in this repo:
 
-- booking conflict detection with buffers
-- status transition rules
-- cancellation requires a reason
-- public booking lookup by `profileSlug + slug`
-- daylight-saving edge cases in slot generation
+- no read surface returns `confirmationToken` to an unauthenticated caller
+- dashboard counts after a status change (canceled bookings currently stay in `upcomingBookings`, `demo-data.ts:499-501`)
+- public booking lookup by `profileSlug + slug`, including an unpublished event
+- daylight-saving edge cases in slot generation (every fixture uses UTC)
 - rate limiting behavior on booking endpoints
 
 Good questions to ask:

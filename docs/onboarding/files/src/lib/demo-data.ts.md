@@ -2,112 +2,37 @@
 
 ## What This File Is For
 
-This file stores all in-memory seed entities used by the app right now.
+This file holds the seed data and the read helpers that pages and services use. Since the September fix pass it has two kinds of state:
 
-It is a data factory and read-path adapter used by both pages and API-facing services.
-
-## Why This File Matters
-
-Because most of this repo still runs on fake state, this file is effectively the data layer today.
-
-Understanding it is essential to understand what users actually see in the UI and what routes return.
-
-## Key Exports / Main Units
-
-- Record arrays such as:
-  - `getUsers()`
-  - `getAccounts()`
-  - `getMemberships()`
-  - `getEventTypes()`
-  - `getBookings()`
-  - `getAvailabilityTemplates()`
-  - `getAvailabilityOverrides()`
-  - `getBlockedTimes()`
-  - `getBookingAttendees()`
-  - `getCalendarIntegrations()`
-  - `getAuditLog()`
-- Query-like helpers:
-  - `getDashboardSnapshot()`
-  - `getPublicBookingPage(profileSlug, eventSlug)`
-  - `getBookingById(bookingId)`
-  - `getBookingByToken(token)`
+- **Static seed arrays** for users, accounts, memberships, the team, event types, availability templates, overrides, blocked times, integrations, audit log and plan limit. Their getters return the module-level arrays directly.
+- **Booking state** (bookings and attendees) lives in a `bookingRepository` created from the seed bookings and attendees (lines 473-475). `getBookings()` and `getBookingAttendees()` return fresh clones from `bookingRepository.read()` (`:477-483`).
 
 ## How It Works
 
-The module creates several constant arrays with a single team, three users, accounts, and a realistic set of event types and bookings.
-
-Important internal details:
-
-- `now` is computed once at module load.
-- `isoNow` and helper `isoFromNow()` keep dates relative and stable during one runtime load.
-- `getDashboardSnapshot()` derives:
-  - upcoming bookings (`startTime >= now`)
-  - past bookings (`startTime < now`)
-  - attendee lookup map by booking ID.
-- `getPublicBookingPage()`:
-  - finds event by `profileSlug + slug`
-  - resolves organizer and template
-  - calls `generateSlots(...)` with owner-specific blockers and rules.
+- `now`, `isoNow` and `isoFromNow(minutes)` (`:22-27`) are computed once at module load, so seed booking times are relative to process start. The three seed bookings have readable tokens (`tok_upcoming_1`, `tok_upcoming_2`, `tok_past_1`).
+- The repository is stored on `globalThis.e1BookingRepository` with `??=`, so a module reload in the same process reuses the existing state instead of reseeding.
+- `getDashboardSnapshot()` (`:497-530`) takes a fresh `new Date()` and splits bookings into upcoming (`startTime >= now`) and past by **start time only**, then builds an attendee map. It calls `getBookings()` twice and `getBookingAttendees()` once, i.e. three full clones per call.
+- `getPublicBookingPage(profileSlug, eventSlug)` (`:532-584`) finds a published, non-deleted event by both slugs, finds its organizer and template, and calls `generateSlots` over `[now, now + maxDaysInFuture days]` with that organizer's overrides, blocked times and current bookings.
+- `getBookingById` and `getBookingByToken` (`:586-592`) search the cloned bookings.
 
 ## How It Connects To Other Files
 
-- `src/lib/mock-services.ts` composes most service behavior from these records.
-- App pages and API routes import helper functions indirectly through services.
-- `src/lib/availability.ts` is called by `getPublicBookingPage` for slot output.
-
-## Important Design Choices
-
-- Seed data is deterministic per process because `now` is fixed on module import.
-- Helpers return internal arrays by reference.
-- Cross-file consistency is achieved by storing everything in one module.
+- `src/lib/booking-repository.ts` provides the store; `src/lib/booking-service.ts` (via `mock-services.ts`) writes to the same `bookingRepository`.
+- Pages call `getDashboardSnapshot` and `getPublicBookingPage` directly (`src/app/dashboard/page.tsx`, `src/app/book/[profileSlug]/[eventSlug]/page.tsx`).
+- `src/lib/availability.ts` computes the slots.
 
 ## Things A Junior Dev Should Notice
 
-- Because arrays are shared, a write-like mutation anywhere could leak across routes.
-- `getDashboardSnapshot()` uses current process time as a boundary, so server long-running behavior can become stale.
-- Some object shapes include fields not used in UI/API yet, which can hide migration gaps later.
+- Static getters still return shared array references. Mutating `getEventTypes()[0]` changes it for every caller, including the booking service. Tests avoid this by `structuredClone`-ing before editing (`src/tests/booking-flow.test.ts:13`).
+- Booking getters return clones. Mutating a returned booking does nothing; that is intentional.
+- "Upcoming" includes canceled and other non-blocking bookings whose start is in the future. The dashboard labels that count as active/pending.
+- The public page picks the organizer's template without checking `deletedAt` (`:547-549`), while the booking service requires a non-deleted template. The two can disagree.
 
-## Code Review Lens
+## Review Notes
 
-Check for:
+- Any new booking read must go through `getBookings()` / the repository, never the module-level `bookings` array, or it will miss new and changed bookings.
+- Returning full `Booking` objects from snapshot helpers exposes `confirmationToken` to every consumer.
 
-- Data staleness and accidental shared-mutation risk.
-- Whether newly added fields are consistently filled across related records.
-- Route-level behavior drift when an entity lookup fails (`null` returns).
+## Exercise
 
-Common risks:
-
-- Returning references enables accidental mutation between unrelated request flows.
-- Missing or inconsistent IDs across arrays break joins.
-- Using `now` from module scope in asynchronous tests can produce confusing snapshots.
-
-## Common Change Scenarios
-
-- Add a new event type:
-  - Include consistent owner/team/event metadata plus weekly rules to keep slot generation reproducible.
-- Add a new booking status example:
-  - Update snapshot derivation and status-driven UI expectations.
-- Expand team setup:
-  - Add membership and plan data together so role assumptions still hold in dashboard examples.
-
-Before editing, inspect:
-
-- `src/lib/mock-services.ts`,
-- any route or page that assumes one team only,
-- and demo pages that render IDs/titles directly.
-
-## Suggested Exercises
-
-- Trace an event type from `getEventTypes()` through `generateSlots()` to a rendered slot button.
-- Change one `booking.status` and observe derived snapshots and UI badges.
-- Add a fake blocked time and follow where it removes availability.
-
-## Observed Facts vs Inference
-
-Observed:
-- This project is currently using in-memory seeded data as a working stand-in for persistence.
-- Data helpers provide both raw and derived access patterns.
-
-Inference:
-- This file is intentionally a training scaffold and not yet production-grade storage.
-- A persistence migration will require replacing this module without changing all downstream callers.
+Call `getDashboardSnapshot()` in a scratch test, cancel one upcoming booking with its token via `cancelBooking`, and call it again. Predict `upcomingBookings.length` before you run it. Reset with `bookingRepository.reset()` in a `finally`.

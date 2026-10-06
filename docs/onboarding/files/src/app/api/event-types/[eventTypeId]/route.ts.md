@@ -37,8 +37,8 @@ This file demonstrates:
   - returns event payload on success
 - `PATCH`:
   - parses JSON body with fallback
-  - calls `updateEventType`
-  - returns updated object
+  - calls `updateEventType`, which merges the body over the event and returns it **without storing anything**; for an unknown ID it silently uses the first seed event type (`src/lib/mock-services.ts:90-97`)
+  - returns that object with 200
 - `DELETE`:
   - returns `{ id, deletedAt }` with current timestamp
 
@@ -49,7 +49,7 @@ No DB deletion occurs; delete is a delete-like response placeholder.
 - Service boundary:
   - `getEventType`, `updateEventType` from `src/lib/mock-services.ts`.
 - Response helper from `src/lib/http.ts`.
-- Related publish/unpublish endpoints update the same domain via `updateEventType`.
+- The publish/unpublish routes call the same `updateEventType` with `{ published: true/false }`, so they are also no-ops. Publishing state used by the booking service and public page comes only from seed data.
 
 ## Important Design Choices
 
@@ -94,7 +94,7 @@ Before editing, inspect:
 
 ## Suggested Exercises
 
-- Compare this route with `/api/event-types/route.ts` to map list/create vs item operations.
+- Compare this route with `src/app/api/event-types/route.ts` to map list/create vs item operations.
 - Add a request example that patches timezone and verify dependent UI views.
 - Trace publish flow from event-type route to public page behavior.
 

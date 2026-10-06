@@ -12,7 +12,7 @@ Observed from code:
 
 - The app has real UI routes under `src/app/...`.
 - It also exposes JSON API routes under `src/app/api/...`.
-- Business logic currently runs against in-memory demo data in `src/lib/demo-data.ts`.
+- Booking state lives in a process-local, clone-on-read repository (`src/lib/booking-repository.ts`) seeded from `src/lib/demo-data.ts`. Everything else (users, teams, event types, availability, integrations) is static seed data.
 - A Prisma schema exists in `prisma/schema.prisma`, which shows the intended long-term persistence model.
 
 Inference / likely intent:
@@ -45,7 +45,9 @@ Owned by `src/lib/`.
 - `domain.ts` defines the core nouns.
 - `booking-state.ts` defines status transition rules.
 - `availability.ts` and `time.ts` implement scheduling logic.
-- `mock-services.ts` coordinates higher-level operations such as booking creation.
+- `booking-service.ts` owns booking validation, guest-token authorization and lifecycle commands (create, confirm, cancel, reschedule), each run inside one repository transaction.
+- `booking-repository.ts` holds booking and attendee state and publishes a transaction's draft only if its callback succeeds.
+- `mock-services.ts` is the facade routes and pages import. Its four booking commands are the real `booking-service` methods (`mock-services.ts:130-135`); its auth, team, event-type and integration functions return canned objects and change nothing.
 
 This is the most important layer for understanding product behavior.
 
@@ -95,7 +97,7 @@ These boundaries are where data changes shape or where bugs often hide.
 ### Persistence boundary
 
 - The schema expects durable records, relations, unique constraints, and indexes.
-- The current runtime uses in-memory arrays instead, so there is a conceptual gap between “current implementation” and “target architecture.”
+- The current runtime uses an in-memory repository instead (one per Node process, reset on restart), so there is a conceptual gap between “current implementation” and “target architecture.”
 
 ### External system boundary
 
@@ -166,15 +168,14 @@ Why this matters:
 ### Example: create booking API request
 
 1. Request hits `src/app/api/bookings/route.ts`.
-2. The handler applies in-memory rate limiting.
-3. It parses the JSON request body.
-4. It calls `createBooking(...)` in `src/lib/mock-services.ts`.
-5. That function:
-   - looks up the event type
-   - calculates the requested end time
-   - checks for conflicts against existing bookings
-   - returns a new booking payload if safe
-6. The route responds using `respond(...)` or `problem(...)` from `src/lib/http.ts`.
+2. The handler applies in-memory rate limiting (12 per minute per `x-forwarded-for` value).
+3. It parses the JSON request body (falling back to `{}` on bad JSON).
+4. It calls `createBooking(...)`, which `src/lib/mock-services.ts:132` re-exports from the booking service.
+5. `create` in `src/lib/booking-service.ts:60-81`:
+   - rejects non-objects, unknown/unpublished events, blank or oversized name/email and malformed email (400/404)
+   - inside `repository.transaction`, asks `generateSlots` whether exactly the requested instant is offered, considering every active booking for the same organizer plus both events' buffers (409 if not)
+   - creates the booking (fresh UUID ID and confirmation token) and its attendee row, and pushes both into the draft
+6. The repository publishes the draft; the route responds `201` via `respond(...)`, or maps a `BookingError` to its status via `bookingFailure` and `problem(...)` from `src/lib/http.ts`.
 
 Why this matters:
 
@@ -228,6 +229,17 @@ Inference / likely intent:
 
 - This is the repo’s core time-handling philosophy and should remain true after the database is wired in.
 
+### Guest actions require the booking's confirmation token
+
+Observed from code:
+
+- `confirm`, `cancel` and `reschedule` all start with `authorize` (`src/lib/booking-service.ts:46-54`): unknown booking 404, wrong token 403, disabled `guestCanCancel`/`guestCanReschedule` 403.
+- Reschedule rotates the token; the old one keeps identifying only the canceled predecessor.
+
+Why this matters:
+
+- The token is the only credential in the app, so any read path that returns it weakens every mutator. Several currently do (see the review in `astraupskill/06-SOLUTIONS-AND-REVIEW.md`).
+
 ### Responses are meant to carry request metadata
 
 Observed from code:
@@ -260,12 +272,12 @@ This is the deepest technical risk in the current implementation.
 
 Observed from code:
 
-- Conflict detection exists.
-- Rate limiting exists.
+- Conflict detection is organizer-wide and buffer-aware, and runs inside a synchronous repository transaction, so two commands in one process cannot interleave.
+- Rate limiting exists but is keyed by a caller-supplied header.
 
 Inference / likely intent:
 
-- Real double-booking prevention will need database transactions or distributed locking, not only application-level checks.
+- Across processes there is no shared state at all. Real double-booking prevention will need a database constraint or lock, not only application-level checks.
 
 ### 3. Gap between prototype services and target production architecture
 
@@ -277,7 +289,8 @@ Inference / likely intent:
 Observed from code:
 
 - Role types exist in the schema and domain types.
-- Route handlers do not currently enforce user identity or permissions.
+- No route or page checks user identity. Owner dashboards and `/api/dashboard/*` are open to anyone.
+- The only authorization is the guest confirmation-token check on confirm/cancel/reschedule, and the open dashboard reads return those tokens.
 
 Why this matters:
 
@@ -291,5 +304,3 @@ Think of the codebase in this order:
 2. The service and utility files define the behavior.
 3. The route handlers expose that behavior to HTTP.
 4. The page files present that behavior to users.
-
-That order is not accidental. It is often the cleanest way to reason about modern application codebases, even when the exact frameworks change.

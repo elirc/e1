@@ -31,8 +31,10 @@ Execution steps:
 - If no event/page is found, `notFound()` is triggered.
 - Otherwise UI renders:
   - event details,
-  - derived metadata like timezone policy and slot count,
-  - slot buttons from `page.slots`.
+  - host, duration, timezone policy, location and cancellation-notice hours (lines 31-44),
+  - slot tiles from `page.slots`, formatted in `page.eventType.timezone` (`:75-98`).
+
+The badge "Auto-detected zone: America/Los_Angeles" (`:70`) is hard-coded text; nothing detects the viewer's zone. The slot tiles are `type="button"` with no handler, so booking still has to go through `POST /api/bookings`.
 
 No booking mutation happens here; actions are only represented by static button text.
 
